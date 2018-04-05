@@ -80,19 +80,46 @@
             testDataRdd.map(r => (r.user, r.product))
       )
 
-      //Validate our model by comparing predicted and actual ratings for test data user
-      //Will use join and then validate our model using Mean Absolute Error
+      //Validate our model by comparing predicted and actual ratings for test data users
+      //Will use join to merge our results and then validate our model using Mean Absolute Error
       val predictedRatingsRdd = predictionsForTestData.map( r => ((r.user, r.product), r.rating))
       val testDataRatingsRdd = testDataRdd.map( r => ((r.user, r.product), r.rating))
       val predictedAndActualRatingRdd = predictedRatingsRdd.join(testDataRatingsRdd)
 
-      //Get the MAE amd display it
+      //Get the MAE amd display it - The lower the MAE the better the model
       val mae = predictedAndActualRatingRdd.map({
           case ((user, product), (ratingP, ratingT)) => math.abs(ratingP - ratingT)
       }).mean
 
       println(s"MAE for our model: $mae")
 
+      //Get the actual mapping for users and products
+      val usersMap = videoGamesDFWithIdsMapped.map( r => {
+        (r.getAs[Double]("userIdInt").toInt, r.getAs[String]("userId"))
+      }).distinct.collectAsMap
+
+      val productsMap = videoGamesDFWithIdsMapped.map( r => {
+        (r.getAs[Double]("productIdInt").toInt, r.getAs[String]("productId"))
+      }).distinct.collectAsMap
+
+      //Let's choose a random user
+      val userIdInt = videoGamesRatingsRdd.takeSample(withReplacement=false, num=1)(0).user
+
+      //Display user's products and ratings
+      val userId = usersMap.get(userIdInt).get
+      println(s"Reviewed products by user $userId:")
+      videoGamesRatingsRdd.filter(_.user == userIdInt).map(r => {
+        (r.product, r.rating)
+      }).collect().foreach(r => {
+        println(productsMap.get(r._1) + "\t" + r._2)
+      })
+
+      //Display recommendations
+      val topFiveRecommendations = matrixModel.recommendProducts(userIdInt, 5)
+      println(s"Top 5 recommendations for user $userId:")
+      topFiveRecommendations.foreach(r => {
+        println(productsMap.get(r.product) + "\t" + r.rating)
+      })
 
     }
   }
