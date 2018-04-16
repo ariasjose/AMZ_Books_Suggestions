@@ -1,6 +1,6 @@
   /**
-    * Created by jarias on 4/4/2018.
-    */
+   * Created by jarias on 4/4/2018.
+  **/
 
   import org.apache.hadoop.fs.{FileSystem, Path}
   import org.apache.spark.ml.feature.{StringIndexer}
@@ -12,8 +12,6 @@
 
   object Main {
 
-    //case class Product(Id:String, Title:String)
-
     def main(args: Array[String]): Unit = {
 
       val conf = new SparkConf().setAppName("AMZBooksSE")
@@ -23,7 +21,7 @@
       val sqlContext = new SQLContext(sc)
 
 
-      //Import video games ratings (userId, productId, rating) - user and product ids are alphanumeric
+      //Import books ratings (userId, productId, rating) - user and product ids are alphanumeric
       val booksRdd = sc.textFile(path="/amz/ratingsBooks.csv").map( r => {
           val values = r.split(',')
           (values(0), values(1), values(2))
@@ -40,19 +38,31 @@
 
       val pipeline = new Pipeline().setStages(Array(strIndexerForUser, strIndexerForProduct))
       val pipelineModel = pipeline.fit(booksDF)
-      val booksDFWithIdsMapped = pipelineModel.transform(booksDF)
 
-      //|userId|productId|rating|userIdInt|productIdInt
-      //|||||
-      //|||||
+      //Save the model generated
+      pipelineModel.save(path="/amz/pipelineModel")
+
+      val booksDFWithIdsMapped = pipelineModel.transform(booksDF)
+      booksDFWithIdsMapped show 5
+
+      //+--------------+----------+------+---------+------------+
+      //|        userId| productId|rating|userIdInt|productIdInt|
+      //+--------------+----------+------+---------+------------+
+      //|A3CW0ZLUO5X2B1|1439171300|   1.0|   6092.0|     32158.0|
+      //|A2D7B5I7ZQ51XL|1439171300|   3.0|  21753.0|     32158.0|
+      //|A34A7QEBMYTALW|1439171300|   1.0|  26053.0|     32158.0|
+      //|A3CA3RWZYJDWXE|1439171300|   3.0|   3061.0|     32158.0|
+      //|A2F6N60Z96CAJI|1439171300|   5.0|      2.0|     32158.0|
+      //+--------------+----------+------+---------+------------+
+
 
       //Create rdd of Rating from DF and persist it as we'll use it later
       val booksRatingsRdd = booksDFWithIdsMapped.map( r => {
-          Rating(
-                  r.getAs[Double]("userIdInt").toInt,
-                  r.getAs[Double]("productIdInt").toInt,
-                  r.getAs[Double]("rating")
-          )
+        Rating(
+          r.getAs[Double]("userIdInt").toInt,
+          r.getAs[Double]("productIdInt").toInt,
+          r.getAs[String]("rating").toDouble
+        )
       }).cache
 
       //Display data description
@@ -71,14 +81,15 @@
       val testSize = testDataRdd.count
       println(s"Training size: $trainingSize; Test size: $testSize")
 
-      //Train and create model
-      val rank = 5
+      //Train and create the matrix factorization model
+      val _rank = 5
       val iterations = 20
-      val matrixModel = ALS.train(trainingDataRdd, rank, iterations)
+      var lambda = 0.01
+      val matrixModel = ALS.train(trainingDataRdd, _rank, iterations, lambda)
 
       //Save the model for future usage
       val fs = FileSystem.get(sc.hadoopConfiguration)
-      val path = new Path("/amz/alsMatrix");
+      val path = new Path("/amz/alsMatrix")
       if(fs.exists(path)){
         fs.delete(path, true)
       }
@@ -93,9 +104,11 @@
       //Will use join to merge our results and then validate our model using Mean Absolute Error
       val predictedRatingsRdd = predictionsForTestData.map( r => ((r.user, r.product), r.rating))
       val testDataRatingsRdd = testDataRdd.map( r => ((r.user, r.product), r.rating))
+
+      //(user, product), (ratingP, ratingT)
       val predictedAndActualRatingsRdd = predictedRatingsRdd.join(testDataRatingsRdd)
 
-      //Get the MAE amd display it - The lower the MAE the better the model
+      //Get the MAE and display it - The lower the MAE the better the model
       val mae = predictedAndActualRatingsRdd.map({
           case ((user, product), (ratingP, ratingT)) => math.abs(ratingP - ratingT)
       }).mean
@@ -134,17 +147,19 @@
       //Display user's products and ratings
       val userId = usersMap.get(userIdInt).get
       println(s"Reviewed products by user $userId:")
+      println("Title | Rating")
       booksRatingsRdd.filter(_.user == userIdInt).map(r => {
         (r.product, r.rating)
       }).collect().foreach(r => {
-        println(productsMap.get(r._1).get._2 + "\t" + r._2)
+        println(productsMap.get(r._1).get._2 + " | " + r._2)
       })
 
       //Display recommendations
-      val topFiveRecommendations = matrixModel.recommendProducts(userIdInt, 5)
-      println(s"Top 5 recommendations for user $userId:")
+      val topFiveRecommendations = matrixModel.recommendProducts(userIdInt, 10)
+      println(s"Top 10 recommendations for user $userId:")
+      println("Title")
       topFiveRecommendations.foreach(r => {
-        println(productsMap.get(r.product).get._2 + "\t" + r.rating)
+        println(productsMap.get(r.product).get._2)
       })
     }
   }
